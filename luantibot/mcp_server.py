@@ -95,9 +95,19 @@ def _pos(bot):
 
 def t_connect(host=None, port=None, username=None, password=None,
               wait_for_map=15):
-    host = host or os.environ.get("LUANTI_HOST", "127.0.0.1")
-    port = int(port or os.environ.get("LUANTI_PORT", 30000))
-    username = username or os.environ.get("LUANTI_USER", "bot")
+    host = host or os.environ.get("LUANTI_HOST")
+    if not host:
+        raise ToolError("no server host: pass host= or set LUANTI_HOST")
+    raw_port = port or os.environ.get("LUANTI_PORT")
+    if not raw_port:
+        raise ToolError("no port: pass port= or set LUANTI_PORT")
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        raise ToolError(f"port must be a number, got {raw_port!r}")
+    username = username or os.environ.get("LUANTI_USER")
+    if not username:
+        raise ToolError("no username: pass username= or set LUANTI_USER")
     password = password if password is not None else os.environ.get(
         "LUANTI_PASSWORD", "")
 
@@ -284,8 +294,10 @@ def _str(desc, default=None):
 
 TOOLS = [
     {"name": "connect", "fn": t_connect,
-     "description": "Connect the bot to a Luanti server. Arguments default to "
-                    "the LUANTI_HOST/PORT/USER/PASSWORD environment variables.",
+     "description": "Connect the bot to a Luanti server. host, port and "
+                    "username are required with no defaults: pass them as "
+                    "arguments or set LUANTI_HOST, LUANTI_PORT and "
+                    "LUANTI_USER (password via LUANTI_PASSWORD).",
      "schema": {"type": "object", "properties": {
          "host": _str("server hostname"), "port": _num("UDP port"),
          "username": _str("account name"), "password": _str("account password"),
