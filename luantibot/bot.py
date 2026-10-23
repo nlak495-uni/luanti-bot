@@ -75,6 +75,12 @@ class Bot:
         # The server ignores any interact whose item index is outside the
         # hotbar, so tools must be moved into it before they can be used.
         self.hotbar_size = 9
+        # Passive defence: while armed, every tick punches the nearest
+        # hostile within reach and sight. It never moves the bot.
+        self.auto_defend_radius = None
+        self.auto_defend_kills = 0
+        self._auto_punched = set()
+        self._auto_next_punch = 0.0
         self._client_hooks()
 
     # ------------------------------------------------------------- plumbing
@@ -206,6 +212,10 @@ class Bot:
             raise BotError(self.client.conn.disconnect_reason or "disconnected")
         self._apply_gravity(dt)
         self.client.send_playerpos()
+        try:
+            self._auto_defend_tick()
+        except Exception as e:          # passive defence must never abort a task
+            print(f"[bot] auto-defend tick failed: {e!r}")
 
     def wait(self, seconds):
         end = time.monotonic() + seconds
@@ -723,6 +733,34 @@ class Bot:
     def hostiles(self, radius=16.0):
         """Nearby hostile mobs, nearest first."""
         return self.client.entities.hostiles(self.position, radius)
+
+    def _auto_defend_tick(self):
+        """Passive defence: punch the nearest reachable, visible hostile.
+
+        Runs from every `step()` while `auto_defend_radius` is armed, so it
+        fires between tool calls and inside long-running actions alike. It
+        never moves the bot: a hostile out of reach is ignored until it
+        comes to us. Kills are counted by watching punched mobs vanish.
+        """
+        radius = self.auto_defend_radius
+        if radius is None or self.dead:
+            return
+        for oid in tuple(self._auto_punched):
+            if oid not in self.client.entities.entities:
+                self._auto_punched.discard(oid)
+                self.auto_defend_kills += 1
+        if time.monotonic() < self._auto_next_punch:
+            return
+        for mob in self.hostiles(radius):
+            if math.dist(mob.position, self.position) > self.reach - 0.5:
+                continue                        # out of reach: we do not chase
+            if not self.has_line_of_sight(
+                    (mob.position[0], mob.position[1] + 1.0, mob.position[2])):
+                continue                        # cannot punch through walls
+            self.attack(mob.id)
+            self._auto_punched.add(mob.id)
+            self._auto_next_punch = time.monotonic() + self.punch_interval()
+            return                              # one punch per tick
 
     def best_weapon(self):
         """Inventory slot dealing the most damage, or None for bare hands."""

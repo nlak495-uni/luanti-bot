@@ -275,13 +275,21 @@ def t_break_node_at(x, y, z, timeout=30):
     return SESSION.submit(job, timeout=float(timeout) + 120)
 
 
-def t_defend(radius=8, timeout=60):
+def t_defend(enable=None, radius=8):
+    """Arm or disarm passive defence; returns status immediately."""
     def job():
         bot = SESSION.require()
-        killed = bot.defend(radius=float(radius), timeout=float(timeout))
-        return {"killed": killed, "hp": bot.hp,
-                "remaining": [e.name for e in bot.hostiles(float(radius))]}
-    return SESSION.submit(job, timeout=float(timeout) + 120)
+        if enable is not None:
+            if enable:
+                bot.auto_defend_radius = float(radius)
+            else:
+                bot.auto_defend_radius = None
+        active = bot.auto_defend_radius
+        return {"active": active is not None, "radius": active,
+                "kills": bot.auto_defend_kills, "hp": bot.hp,
+                "hostiles_nearby": [e.name for e in bot.hostiles(
+                    active if active is not None else float(radius))]}
+    return SESSION.submit(job, timeout=30)
 
 
 def t_entities(radius=24):
@@ -402,11 +410,14 @@ TOOLS = [
          "x": _num("x"), "y": _num("y"), "z": _num("z"),
          "timeout": _num("seconds", 30)}, "required": ["x", "y", "z"]}},
     {"name": "defend", "fn": t_defend,
-     "description": "Fight off hostile mobs near the bot. Only punches "
-                    "mobs it can actually see.",
+     "description": "Toggle passive defence: while active the bot punches "
+                    "hostile mobs within reach and line of sight as it goes "
+                    "about its other work -- it never moves on its own. Call "
+                    "without enable to just read status.",
      "schema": {"type": "object", "properties": {
-         "radius": _num("search radius in nodes", 8),
-         "timeout": _num("seconds per target", 60)}}},
+         "enable": {"type": "boolean",
+                    "description": "true to arm, false to disarm"},
+         "radius": _num("nodes within which hostiles draw punches", 8)}}},
     {"name": "entities", "fn": t_entities,
      "description": "List nearby entities: players, mobs and item drops.",
      "schema": {"type": "object", "properties": {

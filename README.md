@@ -183,7 +183,18 @@ bot.best_weapon()                              # (slot, damage)
 bot.attack(entity)                             # one punch
 bot.fight(entity, timeout=30)                  # chase and kill
 bot.defend(radius=8)                           # clear hostiles around the bot
+
+bot.auto_defend_radius = 8                     # passive mode, or None to disarm
+bot.auto_defend_kills                          # hostiles it has punched away
 ```
+
+`auto_defend_radius` arms a passive defence that piggybacks on every `step()`:
+whenever a hostile mob comes within `reach` *and* line of sight, the bot punches
+it at the normal punch cadence and otherwise keeps doing whatever it was doing.
+It never moves — no chasing, no repositioning — so a scripted task (walking,
+mining, smelting) is never interrupted by it. Mobs beyond reach are left alone
+until they come closer. The active `defend()`/`fight()` remain available for
+when you do want the bot to hunt things down.
 
 `dig()` now chooses the fastest tool it is carrying and waits the exact time the
 server expects before sending the completion, instead of retrying blindly. Dig
@@ -333,6 +344,13 @@ arguments.
 The bot is blocking and has to be pumped continuously to stay connected, so it
 runs on a worker thread: tool calls are queued onto it, and between calls that
 thread keeps stepping the bot.
+
+`defend` is a toggle, not a battle: `{enable: true, radius: 8}` arms passive
+defence and returns immediately, `{enable: false}` disarms, and a bare call
+just reports status (`active`, `radius`, `kills`, `hp`, `hostiles_nearby`).
+While armed, the bot punches hostiles that come within reach and sight on
+every pump — between tool calls *and* inside long-running ones — without ever
+moving itself, so other tasks carry on untouched.
 
 ## Limitations
 
