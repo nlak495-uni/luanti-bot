@@ -358,6 +358,14 @@ class Bot:
     def in_reach(self, pos):
         return self.distance_to(pos) <= self.reach
 
+    def eye_position(self):
+        """The point rays start from: feet position plus eye height.
+
+        Convention shared with `distance_to` and `look_at` (feet + 1.5).
+        """
+        x, y, z = self.position
+        return (x, y + 1.5, z)
+
     def has_line_of_sight(self, pos, frm=None):
         """True when nothing opaque hides `pos` from the bot's eyes.
 
@@ -367,8 +375,7 @@ class Bot:
         loaded count as opaque. `frm` overrides the origin.
         """
         if frm is None:
-            x, y, z = self.position
-            frm = (x, y + 1.5, z)
+            frm = self.eye_position()
         target = tuple(int(v) for v in pos)
         end = (target[0] + 0.5, target[1] + 0.5, target[2] + 0.5)
         for p in _walk_line(frm, end):
@@ -378,6 +385,92 @@ class Bot:
             if d is None or d.blocks_sight:
                 return False
         return True
+
+    def _view_vector(self, yaw, pitch):
+        """Unit direction for a yaw/pitch pair in degrees.
+
+        Inverse of the angles `look_at` computes: yaw sweeps the
+        horizontal plane (0 = +z, 90 = -x), pitch is positive looking
+        down.
+        """
+        y, p = math.radians(yaw), math.radians(pitch)
+        return (-math.sin(y) * math.cos(p), -math.sin(p),
+                math.cos(y) * math.cos(p))
+
+    def raycast(self, direction, max_distance=32.0, frm=None):
+        """The first opaque node along `direction`, as seen from the eye.
+
+        `direction` is a (dx, dy, dz) vector; only its direction
+        matters. Returns a dict with `position` (node coords), `name`,
+        `distance` and `point` (the exact hit point in the world), or
+        None when nothing is hit within `max_distance`. A ray that
+        runs off the loaded map stops at the first unloaded node and
+        reports it with name None and `"unloaded": True`.
+        """
+        if frm is None:
+            frm = self.eye_position()
+        length = math.sqrt(sum(v * v for v in direction))
+        if length == 0:
+            raise BotError("raycast needs a non-zero direction")
+        d = tuple(v / length for v in direction)
+        span = float(max_distance)
+        prev = tuple(math.floor(v) for v in frm)
+        for p in _walk_line(frm, tuple(frm[i] + d[i] * span for i in range(3))):
+            axis = next(i for i in range(3) if p[i] != prev[i])
+            # t (0..1 along the ray) at which it crossed into this voxel,
+            # measured on the face it entered through
+            face = p[axis] if d[axis] > 0 else p[axis] + 1
+            t = (face - frm[axis]) / (d[axis] * span)
+            prev = p
+            hit = {"position": p, "distance": t * span,
+                   "point": tuple(frm[i] + d[i] * t * span for i in range(3))}
+            node_def = self.world.get_def(p)
+            if node_def is None:
+                hit.update(name=None, unloaded=True)
+                return hit
+            if node_def.blocks_sight:
+                hit["name"] = node_def.name
+                return hit
+        return None
+
+    def look_grid(self, size=10, step_deg=5.0, max_distance=32.0,
+                  yaw=None, pitch=None):
+        """A grid of raycasts fanning out around the view direction.
+
+        Casts size x size rays spaced step_deg apart, centred on where
+        the bot is looking (`yaw`/`pitch` in degrees override its
+        current head angles). Rows run top to bottom, columns sweep
+        left to right; each cell is the node name a ray hit, None when
+        it saw nothing within `max_distance`, or "?" when it ran off
+        the loaded map.
+        """
+        size = max(1, min(int(size), 20))
+        if yaw is None:
+            yaw = self.client.yaw
+        if pitch is None:
+            pitch = self.client.pitch
+        half = (size - 1) / 2.0
+        rows, hits = [], []
+        for r in range(size):
+            p_ang = pitch + (r - half) * step_deg
+            row = []
+            for c in range(size):
+                y_ang = yaw + (c - half) * step_deg
+                hit = self.raycast(self._view_vector(y_ang, p_ang),
+                                   max_distance=max_distance)
+                if hit is None:
+                    row.append(None)
+                elif hit.get("unloaded"):
+                    row.append("?")
+                else:
+                    row.append(hit["name"])
+                    hits.append({"row": r, "col": c, "name": hit["name"],
+                                 "position": hit["position"],
+                                 "distance": round(hit["distance"], 1)})
+            rows.append(row)
+        return {"size": size, "step_deg": step_deg,
+                "max_distance": float(max_distance),
+                "yaw": yaw, "pitch": pitch, "rows": rows, "hits": hits}
 
     def approach(self, pos, timeout=120.0):
         """Walk until `pos` is close enough to interact with."""
@@ -694,8 +787,15 @@ class Bot:
                 # step toward it rather than flailing at empty air
                 self.goto(ent.node_pos, tolerance=1, timeout=8, replan=False)
             elif time.monotonic() >= next_punch:
-                self.attack(oid)
-                next_punch = time.monotonic() + self.punch_interval()
+                if self.has_line_of_sight(
+                        (ent.position[0], ent.position[1] + 1.0,
+                         ent.position[2])):
+                    self.attack(oid)
+                    next_punch = time.monotonic() + self.punch_interval()
+                else:
+                    # in reach but hidden: circle around for a shot
+                    self.goto(ent.node_pos, tolerance=1, timeout=8,
+                              replan=False)
             self.step()
             time.sleep(PHYSICS_DT)
         return self.client.entities.entities.get(oid) is None

@@ -180,8 +180,17 @@ def t_place(x, y, z, item=None):
     def job():
         bot = SESSION.require()
         pos = (int(x), int(y), int(z))
+        # Stand where you can see the spot first; placing is aiming at
+        # a node face, and you cannot aim at what you cannot see.
+        if not bot.in_reach(pos) and not bot.approach(pos, timeout=60.0):
+            return {"placed": False, "line_of_sight": None,
+                    "reason": f"could not get within reach of {pos}"}
+        if not bot.has_line_of_sight(pos):
+            return {"placed": False, "line_of_sight": False,
+                    "reason": f"no line of sight to {pos}"}
         ok = bot.place_block(pos, item=item)
-        return {"placed": ok, "node": bot.block_at(pos)}
+        return {"placed": ok, "line_of_sight": True,
+                "node": bot.block_at(pos)}
     return SESSION.submit(job, timeout=120)
 
 
@@ -228,8 +237,19 @@ def t_craft(item, times=1):
 def t_smelt(x, y, z, item, fuel, count=1, timeout=180):
     def job():
         bot = SESSION.require()
-        return {"output": bot.smelt((int(x), int(y), int(z)), item, fuel,
-                                    count=int(count), timeout=float(timeout))}
+        pos = (int(x), int(y), int(z))
+        # Opening a furnace is pointing at it: stand in range and in
+        # sight of it before loading it.
+        if not bot.in_reach(pos) and not bot.approach(pos, timeout=60.0):
+            return {"output": None, "line_of_sight": None,
+                    "reason": f"could not get within reach of the furnace "
+                              f"at {pos}"}
+        if not bot.has_line_of_sight(pos):
+            return {"output": None, "line_of_sight": False,
+                    "reason": f"no line of sight to the furnace at {pos}"}
+        return {"output": bot.smelt(pos, item, fuel,
+                                    count=int(count), timeout=float(timeout)),
+                "line_of_sight": True}
     return SESSION.submit(job, timeout=float(timeout) + 120)
 
 
@@ -281,6 +301,17 @@ def t_entities(radius=24):
     return SESSION.submit(job, timeout=30)
 
 
+def t_look(size=10, step_deg=5, max_distance=32, yaw=None, pitch=None):
+    def job():
+        bot = SESSION.require()
+        return bot.look_grid(
+            size=int(size), step_deg=float(step_deg),
+            max_distance=float(max_distance),
+            yaw=None if yaw is None else float(yaw),
+            pitch=None if pitch is None else float(pitch))
+    return SESSION.submit(job, timeout=60)
+
+
 def _num(desc, default=None):
     d = {"type": "number", "description": desc}
     if default is not None:
@@ -322,7 +353,9 @@ TOOLS = [
          "timeout": _num("seconds", 180)},
          "required": ["x", "y", "z"]}},
     {"name": "place", "fn": t_place,
-     "description": "Place a block at a position.",
+     "description": "Place a block at a position. Requires the bot to see "
+                    "the spot first; refuses when something opaque is in "
+                    "the way.",
      "schema": {"type": "object", "properties": {
          "x": _num("x"), "y": _num("y"), "z": _num("z"),
          "item": _str("item name to place, e.g. mcl_core:cobble")},
@@ -353,7 +386,8 @@ TOOLS = [
          "required": ["item"]}},
     {"name": "smelt", "fn": t_smelt,
      "description": "Load a furnace at a position with input and fuel, then "
-                    "collect the output.",
+                    "collect the output. Requires line of sight to the "
+                    "furnace, as opening it means pointing at it.",
      "schema": {"type": "object", "properties": {
          "x": _num("furnace x"), "y": _num("furnace y"), "z": _num("furnace z"),
          "item": _str("item to smelt"), "fuel": _str("fuel item"),
@@ -368,7 +402,8 @@ TOOLS = [
          "x": _num("x"), "y": _num("y"), "z": _num("z"),
          "timeout": _num("seconds", 30)}, "required": ["x", "y", "z"]}},
     {"name": "defend", "fn": t_defend,
-     "description": "Fight off hostile mobs near the bot.",
+     "description": "Fight off hostile mobs near the bot. Only punches "
+                    "mobs it can actually see.",
      "schema": {"type": "object", "properties": {
          "radius": _num("search radius in nodes", 8),
          "timeout": _num("seconds per target", 60)}}},
@@ -376,6 +411,18 @@ TOOLS = [
      "description": "List nearby entities: players, mobs and item drops.",
      "schema": {"type": "object", "properties": {
          "radius": _num("search radius in nodes", 24)}}},
+    {"name": "look", "fn": t_look,
+     "description": "Look around by casting a grid of raycasts from the "
+                    "bot's eyes, fanning out around its view direction. "
+                    "Each row of the result is a line of sight cells "
+                    "(node name, null for open air, '?' for unloaded "
+                    "map), top row first.",
+     "schema": {"type": "object", "properties": {
+         "size": _num("grid size, e.g. 10 for a 10x10 grid", 10),
+         "step_deg": _num("degrees between rays", 5),
+         "max_distance": _num("how far each ray reaches", 32),
+         "yaw": _num("override the bot's current yaw in degrees"),
+         "pitch": _num("override the bot's current pitch in degrees")}}},
 ]
 
 TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
