@@ -61,6 +61,19 @@ class BotError(Exception):
     pass
 
 
+class DamageInterrupt(BotError):
+    """Raised out of a running action when the bot takes damage.
+
+    Carries the buffered damage events so the caller can hand them to
+    whoever needs to react to being attacked.
+    """
+
+    def __init__(self, events):
+        self.events = list(events)
+        kinds = "/".join(e["kind"] for e in self.events)
+        super().__init__(f"interrupted by {kinds}")
+
+
 class Bot:
     def __init__(self, host, port=30000, username="bot", password="",
                  verbose=False, view_range=12, **pathfinder_opts):
@@ -81,6 +94,12 @@ class Bot:
         self.auto_defend_kills = 0
         self._auto_punched = set()
         self._auto_next_punch = 0.0
+        # Damage the bot has taken since the last time events were collected.
+        # `step()` turns a pending event into a DamageInterrupt when a tool
+        # job is running, so a long action aborts and reports the attack.
+        self.damage_events = []
+        self._damage_pending = False
+        self._interrupt_armed = False
         self._client_hooks()
 
     # ------------------------------------------------------------- plumbing
@@ -90,9 +109,24 @@ class Bot:
             lambda sender, msg, kind: self.emit("chat", sender, msg, kind))
         self.client.on_block.append(lambda bp: self.emit("block", bp))
         self.client.on_death.append(lambda: self.emit("death"))
+        self.client.on_hp_change.append(self._on_hp_change)
+
+    def _on_hp_change(self, old, new):
+        """Record a change in the bot's own HP as a damage/death event."""
+        if new >= old and new != 0:
+            return                          # healing or unchanged: not damage
+        ev = {"kind": "death" if new == 0 else "damage",
+              "old_hp": int(old), "new_hp": int(new),
+              "at": list(self.position)}
+        self.damage_events.append(ev)
+        if len(self.damage_events) > 50:
+            del self.damage_events[:-50]
+        self._damage_pending = True
+        self.emit(ev["kind"], ev)
 
     def on(self, event, fn):
-        """Register a callback: 'chat', 'block', 'move', 'dig', 'death'."""
+        """Register a callback: 'chat', 'block', 'move', 'dig', 'death',
+        'damage', 'attack', 'craft', 'smelt' and the mining_* progress notes."""
         self.listeners.setdefault(event, []).append(fn)
         return self
 
@@ -186,16 +220,48 @@ class Bot:
         """Server-provided node metadata at a position."""
         return self.world.get_meta(pos)
 
-    def find_blocks(self, names, radius=16, origin=None):
-        """Nearest matching nodes within `radius` of the bot."""
+    def find_blocks(self, names, radius=16, origin=None, visible_only=False):
+        """Nearest matching nodes within `radius` of the bot.
+
+        With `visible_only`, drops matches hidden behind something opaque so
+        only blocks the bot can actually see from its eyes are returned.
+        """
         if isinstance(names, str):
             names = [names]
-        return self.world.find_nodes(names, origin or self.position, radius)
+        hits = self.world.find_nodes(names, origin or self.position, radius)
+        if visible_only:
+            hits = [p for p in hits if self.has_line_of_sight(p)]
+        return hits
 
-    def scan(self, names, y_range=None, limit=None):
-        """Search the whole streamed map for node types, nearest first."""
-        return self.world.find_all(names, origin=self.position,
-                                   y_range=y_range, limit=limit)
+    def scan(self, names, y_range=None, limit=None, visible_only=False,
+             radius=None):
+        """Search the whole streamed map for node types, nearest first.
+
+        With `visible_only`, matches the bot cannot see are dropped, so only
+        exposed blocks come back -- buried ore is not reported. `limit` then
+        counts visible matches, and the scan stops early once enough are
+        found rather than raycasting every match on the map. `radius` caps
+        the search at that many nodes from the bot; hits come back nearest
+        first, so results past the radius can be dropped without resorting.
+        """
+        if not visible_only:
+            hits = self.world.find_all(names, origin=self.position,
+                                       y_range=y_range, limit=limit)
+            if radius is not None:
+                hits = [p for p in hits
+                        if self.distance_to(p) <= radius]
+            return hits
+        hits = self.world.find_all(names, origin=self.position,
+                                   y_range=y_range)
+        visible = []
+        for p in hits:
+            if radius is not None and self.distance_to(p) > radius:
+                break           # sorted by distance, so nothing further fits
+            if self.has_line_of_sight(p):
+                visible.append(p)
+                if limit and len(visible) >= limit:
+                    break
+        return visible
 
     def reachable(self, max_expanded=40000):
         """Every standable node the bot can actually walk to from here."""
@@ -206,16 +272,30 @@ class Bot:
 
     # ----------------------------------------------------------- event loop
 
+    def _check_damage_interrupt(self):
+        """Raise DamageInterrupt if something hurt us during an armed job."""
+        if self._damage_pending and self._interrupt_armed:
+            self._damage_pending = False
+            raise DamageInterrupt(self.damage_events)
+
     def step(self, dt=PHYSICS_DT):
         """Advance one tick: process packets, apply gravity, report position."""
         if not self.client.pump(0.0):
             raise BotError(self.client.conn.disconnect_reason or "disconnected")
+        self._check_damage_interrupt()
         self._apply_gravity(dt)
         self.client.send_playerpos()
         try:
             self._auto_defend_tick()
         except Exception as e:          # passive defence must never abort a task
             print(f"[bot] auto-defend tick failed: {e!r}")
+
+    def take_damage_events(self):
+        """Drain the buffered damage events since the last call."""
+        out = self.damage_events
+        self.damage_events = []
+        self._damage_pending = False
+        return out
 
     def wait(self, seconds):
         end = time.monotonic() + seconds
@@ -351,6 +431,7 @@ class Bot:
 
             if not self.client.pump(0.0):
                 raise BotError("disconnected while moving")
+            self._check_damage_interrupt()
             self.client.send_playerpos()
 
             stuck_for += dt

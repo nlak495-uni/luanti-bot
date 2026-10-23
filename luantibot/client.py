@@ -106,6 +106,7 @@ class LuantiClient:
         self.dead = False
         self._died_at = None
         self.on_death = []
+        self.on_hp_change = []               # cb(old_hp, new_hp) on every change
         self.current_formspec = None
         self._got_nodedef = False
         self._got_itemdef = False
@@ -388,6 +389,7 @@ class LuantiClient:
         self.position = [self.position[i] + d[i] / BS for i in range(3)]
 
     def _h_33(self, r):                       # TOCLIENT_HP
+        old = self.hp
         self.hp = r.u16()
         if self.hp == 0 and not self.dead:
             self.dead = True
@@ -398,6 +400,9 @@ class LuantiClient:
         elif self.hp > 0:
             self.dead = False
             self._died_at = None
+        if self.hp != old:
+            for cb in self.on_hp_change:
+                cb(old, self.hp)
 
     def _h_44(self, r):                       # TOCLIENT_SHOW_FORMSPEC
         spec = r.long_string()

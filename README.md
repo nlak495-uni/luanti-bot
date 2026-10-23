@@ -111,6 +111,7 @@ partially-streamed map instead of refusing to move.
 ```python
 bot.block_at((x, y, z))                  # 'mcl_core:stone'
 bot.find_blocks("mcl_core:tree", radius=24)
+bot.find_blocks("mcl_core:tree", visible_only=True)   # only what the eyes can see
 bot.meta_at((x, y, z))                   # per-node metadata from the server
 bot.has_line_of_sight(p)                 # nothing opaque between the eyes and p
 bot.raycast((dx, dy, dz), max_distance=32)   # first opaque node that way
@@ -195,6 +196,26 @@ It never moves — no chasing, no repositioning — so a scripted task (walking,
 mining, smelting) is never interrupted by it. Mobs beyond reach are left alone
 until they come closer. The active `defend()`/`fight()` remain available for
 when you do want the bot to hunt things down.
+
+The bot also reports the damage it *takes*. `bot.on("damage", fn)` and
+`bot.on("death", fn)` fire on every hit and on dying, and
+`bot.take_damage_events()` drains a buffer of `{kind, old_hp, new_hp, at}`
+records for anything that happened since the last drain. To make a long action
+abort itself when hurt, arm the interrupt for its duration:
+
+```python
+bot._interrupt_armed = True
+try:
+    bot.goto(far_away, timeout=180)      # raises DamageInterrupt if hit
+except DamageInterrupt as e:
+    ...                                  # e.events holds the damage records
+finally:
+    bot._interrupt_armed = False
+```
+
+The MCP layer does this around every tool call, so a `goto` that gets attacked
+returns in seconds as `{"interrupted": "damage", "events": [...]}` rather than
+walking on. Healing is deliberately not an event; only damage and death are.
 
 `dig()` now chooses the fastest tool it is carrying and waits the exact time the
 server expects before sending the completion, instead of retrying blindly. Dig
@@ -341,6 +362,13 @@ Tools: `connect`, `disconnect`, `status`, `inventory`, `goto`, `place`,
 `entities`, `look`. With the environment set, `connect` can be called with no
 arguments.
 
+`find_blocks` reports only nodes the bot has a clear line of sight to, so it
+surfaces what is actually visible rather than everything buried in the streamed
+map. A node hidden behind terrain is not returned even when it is loaded; walk
+or look elsewhere to reveal more. Pass `radius` to cap how far from the bot it
+searches. The library `bot.find_blocks(...)` keeps an optional `visible_only`
+flag for when you do want the buried view.
+
 The bot is blocking and has to be pumped continuously to stay connected, so it
 runs on a worker thread: tool calls are queued onto it, and between calls that
 thread keeps stepping the bot.
@@ -351,6 +379,15 @@ just reports status (`active`, `radius`, `kills`, `hp`, `hostiles_nearby`).
 While armed, the bot punches hostiles that come within reach and sight on
 every pump — between tool calls *and* inside long-running ones — without ever
 moving itself, so other tasks carry on untouched.
+
+Damage interrupts the running tool call. The client watches `TOCLIENT_HP`, and
+every drop buffers a `{kind: "damage"|"death", old_hp, new_hp, at}` event. While
+a tool call is running, the next tick raises out of it, so a long `goto`, `dig`
+or `smelt` aborts in a second or two instead of timing out blindly. The result
+then reads `{"interrupted": "damage", "events": [...], "hp": ...}`. A call that
+finishes normally still carries any damage taken while it ran, under the same
+`events` key, so the caller can always react to being attacked. Only damage and
+death are reported — healing is not an event.
 
 ## Limitations
 

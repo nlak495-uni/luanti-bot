@@ -23,7 +23,7 @@ import sys
 import threading
 import traceback
 
-from .bot import Bot, BotError
+from .bot import Bot, BotError, DamageInterrupt
 from .env import load as _load_env
 
 
@@ -57,15 +57,27 @@ class BotSession:
                 bot = self.bot
                 if bot is not None:
                     try:
+                        bot._interrupt_armed = False
                         bot.step()
                     except Exception:
                         pass            # a dead link is reported by the next call
                 continue
+            bot = self.bot
+            if bot is not None:
+                bot._interrupt_armed = True
             try:
                 holder["result"] = fn()
+            except DamageInterrupt as e:
+                # The action was aborted because something attacked us; hand
+                # the events back so the caller can decide what to do.
+                holder["result"] = {"interrupted": "damage",
+                                    "events": e.events,
+                                    "hp": self.bot.hp if self.bot else None}
             except Exception as e:
                 holder["error"] = f"{type(e).__name__}: {e}"
             finally:
+                if bot is not None:
+                    bot._interrupt_armed = False
                 holder["done"].set()
 
     def submit(self, fn, timeout=600.0):
@@ -75,7 +87,15 @@ class BotSession:
             raise TimeoutError("bot action timed out")
         if "error" in holder:
             raise ToolError(holder["error"])
-        return holder.get("result")
+        result = holder.get("result")
+        # Surface any damage taken while the action ran, even if it
+        # finished normally, so the caller can react to being attacked.
+        bot = self.bot
+        if bot is not None:
+            events = bot.take_damage_events()
+            if events and isinstance(result, dict) and "events" not in result:
+                result = dict(result, events=events)
+        return result
 
     def require(self):
         if self.bot is None:
@@ -201,12 +221,18 @@ def t_chat(message):
     return SESSION.submit(job, timeout=30)
 
 
-def t_find_blocks(name, radius=32, limit=20):
+def t_find_blocks(name, limit=20, radius=None):
     def job():
         bot = SESSION.require()
-        hits = bot.scan(name, limit=int(limit) or None)
-        return {"name": name, "count": len(hits),
-                "positions": [list(p) for p in hits[:int(limit)]]}
+        r = float(radius) if radius is not None else None
+        hits = bot.scan(name, limit=int(limit) or None, visible_only=True,
+                        radius=r)
+        out = {"name": name, "count": len(hits),
+               "note": "only blocks with a clear line of sight are reported",
+               "positions": [list(p) for p in hits[:int(limit)]]}
+        if r is not None:
+            out["radius"] = r
+        return out
     return SESSION.submit(job, timeout=120)
 
 
@@ -374,10 +400,15 @@ TOOLS = [
                 "required": ["message"]}},
     {"name": "find_blocks", "fn": t_find_blocks,
      "description": "Search every streamed map block for a node type, nearest "
-                    "first. Use this to locate ore.",
+                    "first, reporting only blocks the bot has a clear line of "
+                    "sight to. Buried nodes are hidden behind the terrain in "
+                    "front of them, so this finds what is actually visible. "
+                    "Pass radius to cap the search distance from the bot. "
+                    "Use this to locate ore.",
      "schema": {"type": "object", "properties": {
          "name": _str("node name, e.g. mcl_core:stone_with_diamond"),
-         "limit": _num("maximum positions to return", 20)},
+         "limit": _num("maximum positions to return", 20),
+         "radius": _num("only report blocks within this many nodes")},
          "required": ["name"]}},
     {"name": "node_at", "fn": t_node_at,
      "description": "Describe the node at a position, including any metadata "
