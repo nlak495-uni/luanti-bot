@@ -6,11 +6,7 @@
         "type": "local",
         "command": ["python3", "-m", "luantibot.mcp_server"],
         "environment": {
-          "PYTHONPATH": "/home/nathan/Documents/code/luanti-bot",
-          "LUANTI_HOST": "play.minecraft.elliottwen.info",
-          "LUANTI_PORT": "{env:LUANTI_PORT}",
-          "LUANTI_USER": "{env:LUANTI_USER}",
-          "LUANTI_PASSWORD": "{env:LUANTI_PASSWORD}"
+          "PYTHONPATH": "/home/nathan/Documents/code/luanti-bot"
         }
       }
     }

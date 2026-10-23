@@ -13,6 +13,9 @@ CSM cannot do this.
 
 Requires nothing outside the standard library (libzstd is loaded via ctypes).
 """
+from .env import load as _load_env
+_load_env()
+
 from .auth import translate_password
 from .bot import Bot, BotError
 from .client import LuantiClient, LoginError

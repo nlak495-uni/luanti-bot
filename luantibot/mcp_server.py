@@ -24,6 +24,7 @@ import threading
 import traceback
 
 from .bot import Bot, BotError
+from .env import load as _load_env
 
 
 class ToolError(Exception):
@@ -95,6 +96,7 @@ def _pos(bot):
 
 def t_connect(host=None, port=None, username=None, password=None,
               wait_for_map=15):
+    _load_env()                     # pick up .env edits without a restart
     host = host or os.environ.get("LUANTI_HOST")
     if not host:
         raise ToolError("no server host: pass host= or set LUANTI_HOST")
