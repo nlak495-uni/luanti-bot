@@ -100,6 +100,12 @@ class Bot:
         self.damage_events = []
         self._damage_pending = False
         self._interrupt_armed = False
+        # One-shot watchers for a node type coming into view; see
+        # `watch_visible`. Each fires on the 0 -> >=1 visible transition
+        # and then removes itself.
+        self._visible_watch = []
+        self._visible_next = 0.0
+        self.visible_interval = 0.5      # seconds between visibility scans
         self._client_hooks()
 
     # ------------------------------------------------------------- plumbing
@@ -126,7 +132,8 @@ class Bot:
 
     def on(self, event, fn):
         """Register a callback: 'chat', 'block', 'move', 'dig', 'death',
-        'damage', 'attack', 'craft', 'smelt' and the mining_* progress notes."""
+        'damage', 'attack', 'craft', 'smelt', 'visible' and the mining_*
+        progress notes."""
         self.listeners.setdefault(event, []).append(fn)
         return self
 
@@ -263,6 +270,60 @@ class Bot:
                     break
         return visible
 
+    def watch_visible(self, name, radius=None, fn=None):
+        """Watch for a node type coming into view; fires once, then stops.
+
+        Registers `name` and calls back on the transition from *no* visible
+        instances to at least one within `radius` (None = anywhere on the
+        streamed map). The count is checked on every pump, throttled by
+        `visible_interval`. On firing, the watcher removes itself, so a
+        later disappearance and reappearance does not fire again -- call
+        `watch_visible` again for that.
+
+        The callback receives the list of positions that became visible.
+        Pass `fn` here, or register with `on("visible", fn)` to hear every
+        watcher; returns the watcher handle for `unwatch_visible`.
+        """
+        watcher = {"name": name, "radius": None if radius is None else float(radius),
+                   "callbacks": [fn] if fn else [], "seen": False}
+        self._visible_watch.append(watcher)
+        return watcher
+
+    def unwatch_visible(self, watcher):
+        """Cancel a watcher returned by `watch_visible`."""
+        if watcher in self._visible_watch:
+            self._visible_watch.remove(watcher)
+
+    def _visible_tick(self):
+        """Fire one-shot watchers whose node type has just come into view.
+
+        Runs from every `step()`. Cheap while nothing is watched; each
+        check raycasts only the still-hidden watchers' matches, so a
+        watcher stops costing anything the moment it fires.
+        """
+        if not self._visible_watch:
+            return
+        now = time.monotonic()
+        if now < self._visible_next:
+            return
+        self._visible_next = now + self.visible_interval
+        for watcher in list(self._visible_watch):
+            if watcher["seen"]:
+                continue
+            visible = self.scan(watcher["name"], radius=watcher["radius"],
+                                visible_only=True)
+            if not visible:
+                continue
+            watcher["seen"] = True
+            self._visible_watch.remove(watcher)
+            self.emit("visible", watcher["name"], visible, watcher["radius"])
+            for cb in watcher["callbacks"]:
+                try:
+                    cb(visible)
+                except Exception as e:
+                    print(f"[bot] visible watcher for {watcher['name']!r} "
+                          f"raised: {e!r}")
+
     def reachable(self, max_expanded=40000):
         """Every standable node the bot can actually walk to from here."""
         return self.pathfinder.explore(self.node_pos, max_expanded)
@@ -289,6 +350,10 @@ class Bot:
             self._auto_defend_tick()
         except Exception as e:          # passive defence must never abort a task
             print(f"[bot] auto-defend tick failed: {e!r}")
+        try:
+            self._visible_tick()
+        except Exception as e:          # neither must a visibility watcher
+            print(f"[bot] visible tick failed: {e!r}")
 
     def take_damage_events(self):
         """Drain the buffered damage events since the last call."""
@@ -534,6 +599,13 @@ class Bot:
         left to right; each cell is the node name a ray hit, None when
         it saw nothing within `max_distance`, or "?" when it ran off
         the loaded map.
+
+        `rows` is the raw raster, so a big or near block fills many
+        cells. `hits` collapses that to one entry per distinct node:
+        the first cell to see it (scan order), the shortest distance
+        any ray measured for it, and `rays` -- how many of the grid's
+        rays landed on it, which is a rough size/proximity cue. Empty
+        when nothing opaque was hit.
         """
         size = max(1, min(int(size), 20))
         if yaw is None:
@@ -541,7 +613,7 @@ class Bot:
         if pitch is None:
             pitch = self.client.pitch
         half = (size - 1) / 2.0
-        rows, hits = [], []
+        rows, by_pos = [], {}
         for r in range(size):
             p_ang = pitch + (r - half) * step_deg
             row = []
@@ -555,13 +627,26 @@ class Bot:
                     row.append("?")
                 else:
                     row.append(hit["name"])
-                    hits.append({"row": r, "col": c, "name": hit["name"],
-                                 "position": hit["position"],
-                                 "distance": round(hit["distance"], 1)})
+                    # Several rays often land on the same big or near block.
+                    # Collapse them: report each node once, at the first cell
+                    # to see it, with the shortest distance any ray measured
+                    # (rays enter through different faces, so distances differ).
+                    entry = by_pos.get(hit["position"])
+                    if entry is None:
+                        by_pos[hit["position"]] = {
+                            "row": r, "col": c, "name": hit["name"],
+                            "position": hit["position"],
+                            "distance": round(hit["distance"], 1),
+                            "rays": 1}
+                    else:
+                        entry["distance"] = min(entry["distance"],
+                                                round(hit["distance"], 1))
+                        entry["rays"] += 1
             rows.append(row)
         return {"size": size, "step_deg": step_deg,
                 "max_distance": float(max_distance),
-                "yaw": yaw, "pitch": pitch, "rows": rows, "hits": hits}
+                "yaw": yaw, "pitch": pitch, "rows": rows,
+                "hits": list(by_pos.values())}
 
     def approach(self, pos, timeout=120.0):
         """Walk until `pos` is close enough to interact with."""

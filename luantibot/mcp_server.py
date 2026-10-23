@@ -458,7 +458,9 @@ TOOLS = [
                     "bot's eyes, fanning out around its view direction. "
                     "Each row of the result is a line of sight cells "
                     "(node name, null for open air, '?' for unloaded "
-                    "map), top row first.",
+                    "map), top row first. The result also carries 'hits': "
+                    "one entry per distinct block seen, with the nearest "
+                    "distance and how many rays struck it.",
      "schema": {"type": "object", "properties": {
          "size": _num("grid size, e.g. 10 for a 10x10 grid", 10),
          "step_deg": _num("degrees between rays", 5),

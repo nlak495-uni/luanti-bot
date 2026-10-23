@@ -116,6 +116,11 @@ bot.meta_at((x, y, z))                   # per-node metadata from the server
 bot.has_line_of_sight(p)                 # nothing opaque between the eyes and p
 bot.raycast((dx, dy, dz), max_distance=32)   # first opaque node that way
 bot.look_grid(size=10, step_deg=5)       # grid of raycasts around the view
+
+w = bot.watch_visible("mcl_core:stone_with_diamond", radius=24,
+                      fn=lambda positions: ...)
+bot.unwatch_visible(w)                   # cancel before it fires
+
 bot.world.all_metadata()                 # every node carrying metadata
 bot.world.is_walkable(p) / is_climbable(p) / is_liquid(p) / is_dangerous(p)
 ```
@@ -368,6 +373,15 @@ map. A node hidden behind terrain is not returned even when it is loaded; walk
 or look elsewhere to reveal more. Pass `radius` to cap how far from the bot it
 searches. The library `bot.find_blocks(...)` keeps an optional `visible_only`
 flag for when you do want the buried view.
+
+`watch_visible(name, radius, fn)` turns that into an event: it calls `fn` with
+the positions the first time at least one instance of `name` is visible, then
+removes itself, so it fires once per registration rather than every tick. It is
+edge-triggered on the 0 -> 1 transition, and it is checked on the pump
+(throttled by `bot.visible_interval`), so it works while the bot is walking or
+mining. Pass `fn` or listen via `on("visible", fn)`, and cancel early with
+`unwatch_visible(w)`. A fresh watcher treats "not seen yet" as zero, so
+registering one for a block that is already visible fires on the next check.
 
 The bot is blocking and has to be pumped continuously to stay connected, so it
 runs on a worker thread: tool calls are queued onto it, and between calls that
