@@ -176,18 +176,6 @@ def t_goto(x, y, z, tolerance=1, timeout=180):
     return SESSION.submit(job, timeout=float(timeout) + 60)
 
 
-def t_dig(x, y, z, timeout=30):
-    def job():
-        bot = SESSION.require()
-        pos = (int(x), int(y), int(z))
-        before = bot.block_at(pos)
-        slot, secs = bot.best_tool_for(pos)
-        ok = bot.dig(pos, timeout=float(timeout))
-        return {"dug": ok, "was": before, "now": bot.block_at(pos),
-                "tool_slot": slot, "expected_seconds": secs}
-    return SESSION.submit(job, timeout=float(timeout) + 120)
-
-
 def t_place(x, y, z, item=None):
     def job():
         bot = SESSION.require()
@@ -245,12 +233,25 @@ def t_smelt(x, y, z, item, fuel, count=1, timeout=180):
     return SESSION.submit(job, timeout=float(timeout) + 120)
 
 
-def t_mine_to_depth(target_y, timeout=900):
+def t_break_node_at(x, y, z, timeout=30):
     def job():
         bot = SESSION.require()
-        ok = bot.mine_to_depth(int(target_y), timeout=float(timeout))
-        return {"reached": ok, "position": _pos(bot), "hp": bot.hp,
-                "lowest_y_known": bot.world.lowest_loaded_y()}
+        pos = (int(x), int(y), int(z))
+        before = bot.block_at(pos)
+        slot, secs = bot.best_tool_for(pos)
+        # Walk in first so line of sight is judged from where the bot
+        # will actually stand, then refuse to dig blind.
+        if not bot.in_reach(pos) and not bot.approach(
+                pos, timeout=min(float(timeout), 60.0)):
+            return {"broken": False, "line_of_sight": None, "was": before,
+                    "reason": f"could not get within reach of {pos}"}
+        if not bot.has_line_of_sight(pos):
+            return {"broken": False, "line_of_sight": False, "was": before,
+                    "reason": f"no line of sight to {pos}"}
+        ok = bot.dig(pos, timeout=float(timeout), approach=False)
+        return {"broken": ok, "line_of_sight": True, "was": before,
+                "now": bot.block_at(pos), "tool_slot": slot,
+                "expected_seconds": secs}
     return SESSION.submit(job, timeout=float(timeout) + 120)
 
 
@@ -320,12 +321,6 @@ TOOLS = [
          "tolerance": _num("how close is close enough, in nodes", 1),
          "timeout": _num("seconds", 180)},
          "required": ["x", "y", "z"]}},
-    {"name": "dig", "fn": t_dig,
-     "description": "Break the node at a position, choosing the best tool held "
-                    "and walking into range first.",
-     "schema": {"type": "object", "properties": {
-         "x": _num("x"), "y": _num("y"), "z": _num("z"),
-         "timeout": _num("seconds", 30)}, "required": ["x", "y", "z"]}},
     {"name": "place", "fn": t_place,
      "description": "Place a block at a position.",
      "schema": {"type": "object", "properties": {
@@ -364,12 +359,14 @@ TOOLS = [
          "item": _str("item to smelt"), "fuel": _str("fuel item"),
          "count": _num("how many to smelt", 1), "timeout": _num("seconds", 180)},
          "required": ["x", "y", "z", "item", "fuel"]}},
-    {"name": "mine_to_depth", "fn": t_mine_to_depth,
-     "description": "Dig a descending staircase to a target y level, fighting "
-                    "off hostiles and avoiding lava.",
+    {"name": "break_node_at", "fn": t_break_node_at,
+     "description": "Break the node at a position if it is visible: the bot "
+                    "walks into range, checks line of sight from its eyes to "
+                    "the node, and refuses when something opaque is in the "
+                    "way.",
      "schema": {"type": "object", "properties": {
-         "target_y": _num("y level to reach"), "timeout": _num("seconds", 900)},
-         "required": ["target_y"]}},
+         "x": _num("x"), "y": _num("y"), "z": _num("z"),
+         "timeout": _num("seconds", 30)}, "required": ["x", "y", "z"]}},
     {"name": "defend", "fn": t_defend,
      "description": "Fight off hostile mobs near the bot.",
      "schema": {"type": "object", "properties": {

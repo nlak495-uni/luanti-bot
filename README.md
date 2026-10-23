@@ -112,6 +112,7 @@ partially-streamed map instead of refusing to move.
 bot.block_at((x, y, z))                  # 'mcl_core:stone'
 bot.find_blocks("mcl_core:tree", radius=24)
 bot.meta_at((x, y, z))                   # per-node metadata from the server
+bot.has_line_of_sight(p)               # nothing opaque between the eyes and p
 bot.world.all_metadata()                 # every node carrying metadata
 bot.world.is_walkable(p) / is_climbable(p) / is_liquid(p) / is_dangerous(p)
 ```
@@ -322,8 +323,8 @@ opencode or any other MCP client. It needs nothing outside the standard library.
 }
 ```
 
-Tools: `connect`, `disconnect`, `status`, `inventory`, `goto`, `dig`, `place`,
-`chat`, `find_blocks`, `node_at`, `craft`, `smelt`, `mine_to_depth`, `defend`,
+Tools: `connect`, `disconnect`, `status`, `inventory`, `goto`, `place`,
+`chat`, `find_blocks`, `node_at`, `craft`, `smelt`, `break_node_at`, `defend`,
 `entities`. With the environment set, `connect` can be called with no arguments.
 
 The bot is blocking and has to be pumped continuously to stay connected, so it

@@ -26,6 +26,37 @@ ARRIVE_EPS = 0.08
 PHYSICS_DT = 0.05
 
 
+def _walk_line(frm, end):
+    """Yield the voxels crossed by the straight line from `frm` to `end`.
+
+    Yields the voxel containing `end` last and never the voxel that
+    contains `frm`, so callers decide what each endpoint means. Walks
+    the grid one boundary crossing at a time (Amanatides & Woo).
+    """
+    o = [float(v) for v in frm]
+    d = [end[i] - o[i] for i in range(3)]
+    cur = [math.floor(v) for v in o]
+    last = [math.floor(v) for v in end]
+    step = [1 if v > 0 else -1 if v < 0 else 0 for v in d]
+    t_max, t_delta = [], []
+    for i in range(3):
+        if d[i] == 0:
+            t_max.append(math.inf)
+            t_delta.append(math.inf)
+        else:
+            boundary = cur[i] + (1 if step[i] > 0 else 0)
+            t_max.append((boundary - o[i]) / d[i])
+            t_delta.append(abs(1.0 / d[i]))
+    crossings = sum(abs(last[i] - cur[i]) for i in range(3))
+    for _ in range(crossings + 3):          # exactly `crossings` + slack
+        if cur == last:
+            return
+        axis = min(range(3), key=t_max.__getitem__)
+        cur[axis] += step[axis]
+        t_max[axis] += t_delta[axis]
+        yield tuple(cur)
+
+
 class BotError(Exception):
     pass
 
@@ -326,6 +357,27 @@ class Bot:
 
     def in_reach(self, pos):
         return self.distance_to(pos) <= self.reach
+
+    def has_line_of_sight(self, pos, frm=None):
+        """True when nothing opaque hides `pos` from the bot's eyes.
+
+        The line runs from the bot's eye position (feet + 1.5, the same
+        origin `distance_to` uses) to the centre of `pos`. The
+        destination node itself never blocks, and nodes that are not
+        loaded count as opaque. `frm` overrides the origin.
+        """
+        if frm is None:
+            x, y, z = self.position
+            frm = (x, y + 1.5, z)
+        target = tuple(int(v) for v in pos)
+        end = (target[0] + 0.5, target[1] + 0.5, target[2] + 0.5)
+        for p in _walk_line(frm, end):
+            if p == target:
+                continue
+            d = self.world.get_def(p)
+            if d is None or d.blocks_sight:
+                return False
+        return True
 
     def approach(self, pos, timeout=120.0):
         """Walk until `pos` is close enough to interact with."""

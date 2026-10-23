@@ -28,6 +28,16 @@ NON_SOLID_DRAWTYPES = {
 }
 LIQUID_DRAWTYPES = {NDT_LIQUID, NDT_FLOWINGLIQUID}
 
+# Drawtypes thin or clear enough to see through, for line-of-sight checks.
+# Everything else that is walkable (stone, wood, slabs, fences, meshes...)
+# counts as opaque.
+TRANSPARENT_DRAWTYPES = {
+    NDT_AIRLIKE, NDT_LIQUID, NDT_FLOWINGLIQUID, NDT_GLASSLIKE,
+    NDT_GLASSLIKE_FRAMED, NDT_GLASSLIKE_FRAMED_OPTIONAL, NDT_TORCHLIKE,
+    NDT_SIGNLIKE, NDT_PLANTLIKE, NDT_RAILLIKE, NDT_FIRELIKE,
+    NDT_PLANTLIKE_ROOTED,
+}
+
 CONTENT_UNKNOWN = 125
 CONTENT_AIR = 126
 CONTENT_IGNORE = 127
@@ -60,6 +70,11 @@ class NodeDef:
     @property
     def is_liquid(self):
         return self.drawtype in LIQUID_DRAWTYPES or self.liquid_type != 0
+
+    @property
+    def blocks_sight(self):
+        """True when this node type hides what is behind it."""
+        return self.walkable and self.drawtype not in TRANSPARENT_DRAWTYPES
 
     def __repr__(self):
         return (f"<NodeDef {self.id} {self.name!r} walkable={self.walkable} "
